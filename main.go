@@ -214,7 +214,7 @@ func generateOTPAuthURL(account Account) string {
 
 func main() {
 	const storageFile = "accounts.json"
-	const passphrase = "your-strong-passphrase"
+	const passphrase = "please-use-you-strong-passphrase"
 
 	storage, err := loadStorage(storageFile, passphrase)
 	if err != nil {
@@ -240,8 +240,9 @@ func main() {
 		6:  "Backup Accounts",
 		7:  "Restore Accounts",
 		8:  "Generate OTPAuth URL",
-		9:  "Toggle Debug Mode",
-		10: "Back to main menu",
+		9:  "Migrate from Google Authenticator",
+		10: "Toggle Debug Mode",
+		11: "Back to main menu",
 	}
 
 	for {
@@ -510,7 +511,6 @@ func main() {
 				} else {
 					fmt.Println("Accounts restored successfully")
 				}
-
 			case 8:
 				fmt.Println("Accounts:")
 				for i, account := range storage.Accounts {
@@ -533,6 +533,37 @@ func main() {
 				fmt.Printf("OTPAuth URL: %s\n", url)
 
 			case 9:
+				fmt.Print("Enter migration data: ")
+				migrationData, err := reader.ReadString('\n')
+				if err != nil {
+					log.Printf("Error reading input: %v", err)
+				} else {
+					migrationData = strings.TrimSpace(migrationData)
+
+					migrationData = strings.TrimPrefix(migrationData, "otpauth-migration://offline?data=")
+
+					accounts, err := decodeMigrationData(migrationData, debugMode, reader)
+					if err != nil {
+						log.Printf("Error decoding migration data: %v", err)
+					} else {
+						fmt.Printf("Decoded %d accounts\n", len(accounts))
+						for i, account := range accounts {
+							fmt.Printf("Account %d: Name=%s, Secret length=%d\n", i, account.Name, len(account.Secret))
+						}
+
+						for _, account := range accounts {
+							storage.addAccount(account.Name, account.Secret)
+						}
+
+						if err := saveStorage(storageFile, passphrase, storage); err != nil {
+							log.Printf("Error saving storage: %v", err)
+						} else {
+							fmt.Println("Accounts migrated successfully")
+						}
+					}
+				}
+
+			case 10:
 				debugMode = !debugMode
 				if debugMode {
 					fmt.Println("Debug mode enabled")
@@ -540,7 +571,7 @@ func main() {
 					fmt.Println("Debug mode disabled")
 				}
 
-			case 10:
+			case 11:
 				break
 
 			default:
