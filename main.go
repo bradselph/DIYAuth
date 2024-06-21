@@ -149,7 +149,7 @@ func showTOTP(account Account, done chan struct{}) {
 				return
 			}
 			fmt.Printf("Account: %s, TOTP: %s\n", account.Name, passcode)
-			time.Sleep(30 * time.Second) // TOTP codes typically refresh every 30 seconds
+			time.Sleep(30 * time.Second)
 		}
 	}
 }
@@ -168,7 +168,7 @@ func showAllTOTPs(accounts []Account, done chan struct{}) {
 				}
 				fmt.Printf("Account: %s, TOTP: %s\n", account.Name, passcode)
 			}
-			time.Sleep(30 * time.Second) // TOTP codes typically refresh every 30 seconds
+			time.Sleep(30 * time.Second)
 		}
 	}
 }
@@ -222,8 +222,8 @@ func main() {
 			}
 
 		case "2":
-			fmt.Println("1. Show specific TOTP and auto refresh")
-			fmt.Println("2. Show all TOTPs and auto refresh")
+			fmt.Println("1. Show specific TOTP")
+			fmt.Println("2. Show all TOTPs")
 			fmt.Print("Choose an option: ")
 			innerOption, err := reader.ReadString('\n')
 			if err != nil {
