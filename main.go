@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +52,12 @@ func saveStorage(filename string, storage *Storage) error {
 
 func (s *Storage) addAccount(name, secret string) {
 	s.Accounts = append(s.Accounts, Account{Name: name, Secret: secret})
+}
+
+func (s *Storage) removeAccount(index int) {
+	if index >= 0 && index < len(s.Accounts) {
+		s.Accounts = append(s.Accounts[:index], s.Accounts[index+1:]...)
+	}
 }
 
 func generateTOTP(secret string) (string, error) {
@@ -144,7 +151,8 @@ func main() {
 		fmt.Println("2. Show TOTPs")
 		fmt.Println("3. Migrate from Google Authenticator")
 		fmt.Println("4. Toggle Debug Mode")
-		fmt.Println("5. Exit")
+		fmt.Println("5. Remove Account")
+		fmt.Println("6. Exit")
 		fmt.Print("Choose an option: ")
 
 		option, err := reader.ReadString('\n')
@@ -231,6 +239,43 @@ func main() {
 			}
 
 		case "5":
+			fmt.Println("Accounts:")
+			for i, account := range storage.Accounts {
+				fmt.Printf("%d. %s\n", i+1, account.Name)
+			}
+			fmt.Print("Enter the number of the account to remove: ")
+			accountNumberStr, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			accountNumberStr = strings.TrimSpace(accountNumberStr)
+			accountNumber, err := strconv.Atoi(accountNumberStr)
+			if err != nil || accountNumber < 1 || accountNumber > len(storage.Accounts) {
+				fmt.Println("Invalid account number")
+				continue
+			}
+
+			fmt.Printf("Are you sure you want to remove account %s? (y/n): ", storage.Accounts[accountNumber-1].Name)
+			confirmation, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			confirmation = strings.TrimSpace(confirmation)
+
+			if strings.ToLower(confirmation) == "y" {
+				storage.removeAccount(accountNumber - 1)
+				if err := saveStorage(storageFile, storage); err != nil {
+					log.Printf("Error saving storage: %v", err)
+				} else {
+					fmt.Println("Account removed successfully")
+				}
+			} else {
+				fmt.Println("Account removal cancelled")
+			}
+
+		case "6":
 			fmt.Println("Exiting...")
 			return
 
