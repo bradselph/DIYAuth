@@ -173,29 +173,33 @@ func decodeMigrationData(data string, debug bool, reader *bufio.Reader) ([]Accou
 	return accounts, nil
 }
 
-func tryManualDecode(data []byte) {
-	if len(data) < 2 {
-		fmt.Println("Data too short")
-		return
-	}
+/*
+func tryManualDecode is unused (U1000)
+Commented out the unused function.
 
-	tag := data[0]
-	fieldNumber := tag >> 3
-	wireType := tag & 0x7
+	func tryManualDecode(data []byte) {
+		if len(data) < 2 {
+			fmt.Println("Data too short")
+			return
+		}
 
-	fmt.Printf("First byte: %02x\n", tag)
-	fmt.Printf("Field number: %d\n", fieldNumber)
-	fmt.Printf("Wire type: %d\n", wireType)
+		tag := data[0]
+		fieldNumber := tag >> 3
+		wireType := tag & 0x7
 
-	if wireType == 2 {
-		length := int(data[1])
-		fmt.Printf("Length: %d\n", length)
-		if len(data) >= length+2 {
-			fmt.Printf("Field data: %x\n", data[2:length+2])
+		fmt.Printf("First byte: %02x\n", tag)
+		fmt.Printf("Field number: %d\n", fieldNumber)
+		fmt.Printf("Wire type: %d\n", wireType)
+
+		if wireType == 2 {
+			length := int(data[1])
+			fmt.Printf("Length: %d\n", length)
+			if len(data) >= length+2 {
+				fmt.Printf("Field data: %x\n", data[2:length+2])
+			}
 		}
 	}
-}
-
+*/
 func showTOTP(account Account, done chan struct{}) {
 	for {
 		select {
@@ -208,7 +212,7 @@ func showTOTP(account Account, done chan struct{}) {
 				return
 			}
 			fmt.Printf("Account: %s, TOTP: %s\n", account.Name, passcode)
-			time.Sleep(30 * time.Second) // TOTP codes typically refresh every 30 seconds
+			time.Sleep(30 * time.Second)
 		}
 	}
 }
@@ -227,7 +231,7 @@ func showAllTOTPs(accounts []Account, done chan struct{}) {
 				}
 				fmt.Printf("Account: %s, TOTP: %s\n", account.Name, passcode)
 			}
-			time.Sleep(30 * time.Second) // TOTP codes typically refresh every 30 seconds
+			time.Sleep(30 * time.Second)
 		}
 	}
 }
@@ -294,8 +298,8 @@ func main() {
 			}
 
 		case "2":
-			fmt.Println("1. Show specific TOTP with auto-refresh")
-			fmt.Println("2. Show all TOTPs with auto-refresh")
+			fmt.Println("1. Show specific TOTP")
+			fmt.Println("2. Show all TOTPs")
 			fmt.Print("Choose an option: ")
 
 			subOption, err := reader.ReadString('\n')
@@ -345,35 +349,31 @@ func main() {
 			migrationData, err := reader.ReadString('\n')
 			if err != nil {
 				log.Printf("Error reading input: %v", err)
-				continue
-			}
-			migrationData = strings.TrimSpace(migrationData)
+			} else {
+				migrationData = strings.TrimSpace(migrationData)
 
-			if strings.HasPrefix(migrationData, "otpauth-migration://offline?data=") {
 				migrationData = strings.TrimPrefix(migrationData, "otpauth-migration://offline?data=")
-			}
 
-			accounts, err := decodeMigrationData(migrationData, debugMode, reader)
-			if err != nil {
-				log.Printf("Error decoding migration data: %v", err)
-				continue
-			}
+				accounts, err := decodeMigrationData(migrationData, debugMode, reader)
+				if err != nil {
+					log.Printf("Error decoding migration data: %v", err)
+				} else {
+					fmt.Printf("Decoded %d accounts\n", len(accounts))
+					for i, account := range accounts {
+						fmt.Printf("Account %d: Name=%s, Secret length=%d\n", i, account.Name, len(account.Secret))
+					}
 
-			fmt.Printf("Decoded %d accounts\n", len(accounts))
-			for i, account := range accounts {
-				fmt.Printf("Account %d: Name=%s, Secret length=%d\n", i, account.Name, len(account.Secret))
-			}
+					for _, account := range accounts {
+						storage.addAccount(account.Name, account.Secret)
+					}
 
-			for _, account := range accounts {
-				storage.addAccount(account.Name, account.Secret)
+					if err := saveStorage(storageFile, passphrase, storage); err != nil {
+						log.Printf("Error saving storage: %v", err)
+					} else {
+						fmt.Println("Accounts migrated successfully")
+					}
+				}
 			}
-
-			if err := saveStorage(storageFile, passphrase, storage); err != nil {
-				log.Printf("Error saving storage: %v", err)
-				continue
-			}
-
-			fmt.Println("Accounts migrated successfully")
 
 		case "4":
 			debugMode = !debugMode
