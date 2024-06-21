@@ -137,6 +137,42 @@ func tryManualDecode(data []byte) {
 
 const storageFile = "accounts.json"
 
+func showTOTP(account Account, done chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		default:
+			passcode, err := generateTOTP(account.Secret)
+			if err != nil {
+				log.Printf("Error generating TOTP for account %s: %v", account.Name, err)
+				return
+			}
+			fmt.Printf("Account: %s, TOTP: %s\n", account.Name, passcode)
+			time.Sleep(30 * time.Second) // TOTP codes typically refresh every 30 seconds
+		}
+	}
+}
+
+func showAllTOTPs(accounts []Account, done chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		default:
+			for _, account := range accounts {
+				passcode, err := generateTOTP(account.Secret)
+				if err != nil {
+					log.Printf("Error generating TOTP for account %s: %v", account.Name, err)
+					continue
+				}
+				fmt.Printf("Account: %s, TOTP: %s\n", account.Name, passcode)
+			}
+			time.Sleep(30 * time.Second) // TOTP codes typically refresh every 30 seconds
+		}
+	}
+}
+
 func main() {
 	storage, err := loadStorage(storageFile)
 	if err != nil {
@@ -186,13 +222,49 @@ func main() {
 			}
 
 		case "2":
-			for _, account := range storage.Accounts {
-				passcode, err := generateTOTP(account.Secret)
+			fmt.Println("1. Show specific TOTP and auto refresh")
+			fmt.Println("2. Show all TOTPs and auto refresh")
+			fmt.Print("Choose an option: ")
+			innerOption, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			innerOption = strings.TrimSpace(innerOption)
+
+			done := make(chan struct{})
+			switch innerOption {
+			case "1":
+				fmt.Println("Accounts:")
+				for i, account := range storage.Accounts {
+					fmt.Printf("%d. %s\n", i+1, account.Name)
+				}
+				fmt.Print("Enter the number of the account to show: ")
+				accountNumberStr, err := reader.ReadString('\n')
 				if err != nil {
-					log.Printf("Error generating TOTP for account %s: %v", account.Name, err)
+					log.Printf("Error reading input: %v", err)
 					continue
 				}
-				fmt.Printf("Account: %s, TOTP: %s\n", account.Name, passcode)
+				accountNumberStr = strings.TrimSpace(accountNumberStr)
+				accountNumber, err := strconv.Atoi(accountNumberStr)
+				if err != nil || accountNumber < 1 || accountNumber > len(storage.Accounts) {
+					fmt.Println("Invalid account number")
+					continue
+				}
+
+				go showTOTP(storage.Accounts[accountNumber-1], done)
+				fmt.Println("Press Enter to stop...")
+				reader.ReadString('\n')
+				close(done)
+
+			case "2":
+				go showAllTOTPs(storage.Accounts, done)
+				fmt.Println("Press Enter to stop...")
+				reader.ReadString('\n')
+				close(done)
+
+			default:
+				fmt.Println("Invalid option")
 			}
 
 		case "3":
