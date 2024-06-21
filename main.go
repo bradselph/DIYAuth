@@ -61,7 +61,7 @@ func generateTOTP(secret string) (string, error) {
 	return passcode, nil
 }
 
-func decodeMigrationData(data string, debug bool) ([]Account, error) {
+func decodeMigrationData(data string, debug bool, reader *bufio.Reader) ([]Account, error) {
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode base64 data: %v", err)
@@ -89,8 +89,16 @@ func decodeMigrationData(data string, debug bool) ([]Account, error) {
 		}
 
 		secret := base32.StdEncoding.EncodeToString(otp.RawData)
+
+		fmt.Printf("Enter name for account %d: ", i)
+		name, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("error reading account name: %v", err)
+		}
+		name = strings.TrimSpace(name)
+
 		accounts = append(accounts, Account{
-			Name:   fmt.Sprintf("Account %d", i),
+			Name:   name,
 			Secret: secret,
 		})
 	}
@@ -192,7 +200,7 @@ func main() {
 				migrationData = strings.TrimPrefix(migrationData, "otpauth-migration://offline?data=")
 			}
 
-			accounts, err := decodeMigrationData(migrationData, debugMode)
+			accounts, err := decodeMigrationData(migrationData, debugMode, reader)
 			if err != nil {
 				log.Printf("Error decoding migration data: %v", err)
 				continue
