@@ -58,24 +58,26 @@ func (s *Storage) addAccount(name, secret string) {
 	s.Accounts = append(s.Accounts, Account{Name: name, Secret: secret})
 }
 
-// Function to generate a TOTP
 func generateTOTP(secret string) (string, error) {
-	passcode, err := totp.GenerateCode(secret, time.Now())
+	// Decode the base32 secret if necessary
+	secretBytes, err := base32.StdEncoding.DecodeString(secret)
+	if err != nil {
+		// If decoding fails, assume the secret is already in the correct format
+		secretBytes = []byte(secret)
+	}
+
+	passcode, err := totp.GenerateCode(string(secretBytes), time.Now())
 	if err != nil {
 		return "", err
 	}
 	return passcode, nil
 }
 
-// Function to decode the migration data
 func decodeMigrationData(data string) ([]Account, error) {
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode base64 data: %v", err)
 	}
-
-	fmt.Printf("Decoded data length: %d bytes\n", len(decoded))
-	fmt.Printf("Decoded data (hex): %x\n", decoded)
 
 	var payload MigrationPayload
 	err = proto.Unmarshal(decoded, &payload)
@@ -83,18 +85,63 @@ func decodeMigrationData(data string) ([]Account, error) {
 		return nil, fmt.Errorf("failed to unmarshal protobuf: %v", err)
 	}
 
-	fmt.Printf("Number of OTP parameters: %d\n", len(payload.OtpParameters))
-
 	var accounts []Account
 	for i, otp := range payload.OtpParameters {
-		fmt.Printf("OTP parameter %d raw data: %x\n", i, otp.RawData)
-
+		secret := base32.StdEncoding.EncodeToString(otp.RawData)
 		accounts = append(accounts, Account{
-			Name:   fmt.Sprintf("Account %d", i),
-			Secret: base32.StdEncoding.EncodeToString(otp.RawData),
+			Name:   fmt.Sprintf("Imported Account %d", i+1),
+			Secret: secret,
 		})
 	}
 	return accounts, nil
+}
+
+func parseOtpParameter(data []byte) (name, issuer, secret string, err error) {
+	for len(data) > 0 {
+		tag := data[0]
+		fieldNum := tag >> 3
+		wireType := tag & 0x7
+		data = data[1:]
+
+		switch fieldNum {
+		case 1: // name
+			if wireType != 2 {
+				return "", "", "", fmt.Errorf("invalid wire type for name")
+			}
+			length := int(data[0])
+			name = string(data[1 : length+1])
+			data = data[length+1:]
+		case 2: // issuer
+			if wireType != 2 {
+				return "", "", "", fmt.Errorf("invalid wire type for issuer")
+			}
+			length := int(data[0])
+			issuer = string(data[1 : length+1])
+			data = data[length+1:]
+		case 3: // secret
+			if wireType != 2 {
+				return "", "", "", fmt.Errorf("invalid wire type for secret")
+			}
+			length := int(data[0])
+			secret = base32.StdEncoding.EncodeToString(data[1 : length+1])
+			data = data[length+1:]
+		default:
+			// Skip unknown fields
+			switch wireType {
+			case 0: // varint
+				for data[0]&0x80 != 0 {
+					data = data[1:]
+				}
+				data = data[1:]
+			case 2: // length-delimited
+				length := int(data[0])
+				data = data[length+1:]
+			default:
+				return "", "", "", fmt.Errorf("unsupported wire type: %d", wireType)
+			}
+		}
+	}
+	return
 }
 
 func tryManualDecode(data []byte) {
@@ -197,11 +244,18 @@ func main() {
 
 			fmt.Printf("Decoded %d accounts\n", len(accounts))
 			for i, account := range accounts {
-				fmt.Printf("Account %d: Name=%s, Secret length=%d\n", i, account.Name, len(account.Secret))
-			}
-
-			for _, account := range accounts {
-				storage.addAccount(account.Name, account.Secret)
+				fmt.Printf("Account %d\n", i+1)
+				fmt.Print("Enter a name for this account: ")
+				name, err := reader.ReadString('\n')
+				if err != nil {
+					log.Printf("Error reading input: %v", err)
+					continue
+				}
+				name = strings.TrimSpace(name)
+				if name == "" {
+					name = account.Name
+				}
+				storage.addAccount(name, account.Secret)
 			}
 
 			if err := saveStorage(storageFile, storage); err != nil {
