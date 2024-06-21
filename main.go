@@ -2,10 +2,14 @@ package main
 
 import (
 	"bufio"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -25,7 +29,46 @@ type Storage struct {
 	Accounts []Account `json:"accounts"`
 }
 
-func loadStorage(filename string) (*Storage, error) {
+func encrypt(data []byte, passphrase string) ([]byte, error) {
+	block, err := aes.NewCipher([]byte(passphrase))
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	return gcm.Seal(nonce, nonce, data, nil), nil
+}
+
+func decrypt(data []byte, passphrase string) ([]byte, error) {
+	block, err := aes.NewCipher([]byte(passphrase))
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+func loadStorage(filename, passphrase string) (*Storage, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -34,20 +77,31 @@ func loadStorage(filename string) (*Storage, error) {
 		return nil, err
 	}
 
+	decryptedData, err := decrypt(data, passphrase)
+	if err != nil {
+		return nil, err
+	}
+
 	var storage Storage
-	err = json.Unmarshal(data, &storage)
+	err = json.Unmarshal(decryptedData, &storage)
 	if err != nil {
 		return nil, err
 	}
 	return &storage, nil
 }
 
-func saveStorage(filename string, storage *Storage) error {
+func saveStorage(filename, passphrase string, storage *Storage) error {
 	data, err := json.MarshalIndent(storage, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filename, data, 0644)
+
+	encryptedData, err := encrypt(data, passphrase)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(filename, encryptedData, 0644)
 }
 
 func (s *Storage) addAccount(name, secret string) {
@@ -57,6 +111,13 @@ func (s *Storage) addAccount(name, secret string) {
 func (s *Storage) removeAccount(index int) {
 	if index >= 0 && index < len(s.Accounts) {
 		s.Accounts = append(s.Accounts[:index], s.Accounts[index+1:]...)
+	}
+}
+
+func (s *Storage) editAccount(index int, newName, newSecret string) {
+	if index >= 0 && index < len(s.Accounts) {
+		s.Accounts[index].Name = newName
+		s.Accounts[index].Secret = newSecret
 	}
 }
 
@@ -135,8 +196,6 @@ func tryManualDecode(data []byte) {
 	}
 }
 
-const storageFile = "accounts.json"
-
 func showTOTP(account Account, done chan struct{}) {
 	for {
 		select {
@@ -149,7 +208,7 @@ func showTOTP(account Account, done chan struct{}) {
 				return
 			}
 			fmt.Printf("Account: %s, TOTP: %s\n", account.Name, passcode)
-			time.Sleep(30 * time.Second)
+			time.Sleep(30 * time.Second) // TOTP codes typically refresh every 30 seconds
 		}
 	}
 }
@@ -168,13 +227,20 @@ func showAllTOTPs(accounts []Account, done chan struct{}) {
 				}
 				fmt.Printf("Account: %s, TOTP: %s\n", account.Name, passcode)
 			}
-			time.Sleep(30 * time.Second)
+			time.Sleep(30 * time.Second) // TOTP codes typically refresh every 30 seconds
 		}
 	}
 }
 
+func generateOTPAuthURL(account Account) string {
+	return fmt.Sprintf("otpauth://totp/%s?secret=%s", account.Name, account.Secret)
+}
+
 func main() {
-	storage, err := loadStorage(storageFile)
+	const storageFile = "accounts.json"
+	const passphrase = "your-strong-passphrase"
+
+	storage, err := loadStorage(storageFile, passphrase)
 	if err != nil {
 		log.Fatalf("Error loading storage: %v", err)
 	}
@@ -188,7 +254,13 @@ func main() {
 		fmt.Println("3. Migrate from Google Authenticator")
 		fmt.Println("4. Toggle Debug Mode")
 		fmt.Println("5. Remove Account")
-		fmt.Println("6. Exit")
+		fmt.Println("6. Edit Account")
+		fmt.Println("7. Export Accounts")
+		fmt.Println("8. Import Accounts")
+		fmt.Println("9. Backup Accounts")
+		fmt.Println("10. Restore Accounts")
+		fmt.Println("11. Generate OTPAuth URL")
+		fmt.Println("12. Exit")
 		fmt.Print("Choose an option: ")
 
 		option, err := reader.ReadString('\n')
@@ -217,23 +289,24 @@ func main() {
 			secret = strings.TrimSpace(secret)
 
 			storage.addAccount(name, secret)
-			if err := saveStorage(storageFile, storage); err != nil {
+			if err := saveStorage(storageFile, passphrase, storage); err != nil {
 				log.Printf("Error saving storage: %v", err)
 			}
 
 		case "2":
-			fmt.Println("1. Show specific TOTP")
-			fmt.Println("2. Show all TOTPs")
+			fmt.Println("1. Show specific TOTP with auto-refresh")
+			fmt.Println("2. Show all TOTPs with auto-refresh")
 			fmt.Print("Choose an option: ")
-			innerOption, err := reader.ReadString('\n')
+
+			subOption, err := reader.ReadString('\n')
 			if err != nil {
 				log.Printf("Error reading input: %v", err)
 				continue
 			}
-			innerOption = strings.TrimSpace(innerOption)
+			subOption = strings.TrimSpace(subOption)
 
 			done := make(chan struct{})
-			switch innerOption {
+			switch subOption {
 			case "1":
 				fmt.Println("Accounts:")
 				for i, account := range storage.Accounts {
@@ -295,7 +368,7 @@ func main() {
 				storage.addAccount(account.Name, account.Secret)
 			}
 
-			if err := saveStorage(storageFile, storage); err != nil {
+			if err := saveStorage(storageFile, passphrase, storage); err != nil {
 				log.Printf("Error saving storage: %v", err)
 				continue
 			}
@@ -338,7 +411,7 @@ func main() {
 
 			if strings.ToLower(confirmation) == "y" {
 				storage.removeAccount(accountNumber - 1)
-				if err := saveStorage(storageFile, storage); err != nil {
+				if err := saveStorage(storageFile, passphrase, storage); err != nil {
 					log.Printf("Error saving storage: %v", err)
 				} else {
 					fmt.Println("Account removed successfully")
@@ -348,7 +421,178 @@ func main() {
 			}
 
 		case "6":
-			fmt.Println("Exiting...")
+			fmt.Println("Accounts:")
+			for i, account := range storage.Accounts {
+				fmt.Printf("%d. %s\n", i+1, account.Name)
+			}
+			fmt.Print("Enter the number of the account to edit: ")
+			accountNumberStr, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			accountNumberStr = strings.TrimSpace(accountNumberStr)
+			accountNumber, err := strconv.Atoi(accountNumberStr)
+			if err != nil || accountNumber < 1 || accountNumber > len(storage.Accounts) {
+				fmt.Println("Invalid account number")
+				continue
+			}
+
+			fmt.Print("Enter new name (leave empty to keep current): ")
+			newName, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			newName = strings.TrimSpace(newName)
+
+			fmt.Print("Enter new secret (leave empty to keep current): ")
+			newSecret, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			newSecret = strings.TrimSpace(newSecret)
+
+			account := storage.Accounts[accountNumber-1]
+			if newName != "" {
+				account.Name = newName
+			}
+			if newSecret != "" {
+				account.Secret = newSecret
+			}
+
+			storage.editAccount(accountNumber-1, account.Name, account.Secret)
+			if err := saveStorage(storageFile, passphrase, storage); err != nil {
+				log.Printf("Error saving storage: %v", err)
+			} else {
+				fmt.Println("Account edited successfully")
+			}
+
+		case "7":
+			fmt.Print("Enter export filename: ")
+			exportFilename, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			exportFilename = strings.TrimSpace(exportFilename)
+
+			data, err := json.MarshalIndent(storage, "", "  ")
+			if err != nil {
+				log.Printf("Error exporting accounts: %v", err)
+				continue
+			}
+
+			err = os.WriteFile(exportFilename, data, 0644)
+			if err != nil {
+				log.Printf("Error saving export file: %v", err)
+			} else {
+				fmt.Println("Accounts exported successfully")
+			}
+
+		case "8":
+			fmt.Print("Enter import filename: ")
+			importFilename, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			importFilename = strings.TrimSpace(importFilename)
+
+			data, err := os.ReadFile(importFilename)
+			if err != nil {
+				log.Printf("Error reading import file: %v", err)
+				continue
+			}
+
+			var importedStorage Storage
+			err = json.Unmarshal(data, &importedStorage)
+			if err != nil {
+				log.Printf("Error importing accounts: %v", err)
+				continue
+			}
+
+			storage.Accounts = append(storage.Accounts, importedStorage.Accounts...)
+			if err := saveStorage(storageFile, passphrase, storage); err != nil {
+				log.Printf("Error saving storage: %v", err)
+			} else {
+				fmt.Println("Accounts imported successfully")
+			}
+
+		case "9":
+			fmt.Print("Enter backup filename: ")
+			backupFilename, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			backupFilename = strings.TrimSpace(backupFilename)
+
+			data, err := json.MarshalIndent(storage, "", "  ")
+			if err != nil {
+				log.Printf("Error creating backup: %v", err)
+				continue
+			}
+
+			err = os.WriteFile(backupFilename, data, 0644)
+			if err != nil {
+				log.Printf("Error saving backup file: %v", err)
+			} else {
+				fmt.Println("Backup created successfully")
+			}
+
+		case "10":
+			fmt.Print("Enter backup filename: ")
+			backupFilename, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			backupFilename = strings.TrimSpace(backupFilename)
+
+			data, err := os.ReadFile(backupFilename)
+			if err != nil {
+				log.Printf("Error reading backup file: %v", err)
+				continue
+			}
+
+			var restoredStorage Storage
+			err = json.Unmarshal(data, &restoredStorage)
+			if err != nil {
+				log.Printf("Error restoring accounts: %v", err)
+				continue
+			}
+
+			storage = &restoredStorage
+			if err := saveStorage(storageFile, passphrase, storage); err != nil {
+				log.Printf("Error saving storage: %v", err)
+			} else {
+				fmt.Println("Accounts restored successfully")
+			}
+
+		case "11":
+			fmt.Println("Accounts:")
+			for i, account := range storage.Accounts {
+				fmt.Printf("%d. %s\n", i+1, account.Name)
+			}
+			fmt.Print("Enter the number of the account to generate URL for: ")
+			accountNumberStr, err := reader.ReadString('\n')
+			if err != nil {
+				log.Printf("Error reading input: %v", err)
+				continue
+			}
+			accountNumberStr = strings.TrimSpace(accountNumberStr)
+			accountNumber, err := strconv.Atoi(accountNumberStr)
+			if err != nil || accountNumber < 1 || accountNumber > len(storage.Accounts) {
+				fmt.Println("Invalid account number")
+				continue
+			}
+
+			url := generateOTPAuthURL(storage.Accounts[accountNumber-1])
+			fmt.Printf("OTPAuth URL: %s\n", url)
+
+		case "12":
 			return
 
 		default:
