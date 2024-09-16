@@ -1,6 +1,7 @@
 syntax = "proto3";
-option go_package = "./";
 package main;
+
+option go_package = "./";
 
 message MigrationPayload {
   repeated OtpParameters otp_parameters = 1;
