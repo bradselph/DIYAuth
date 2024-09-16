@@ -8,3 +8,6 @@ rsrc_windows_amd64.syso
 DIYAuth.exe
 data
 accounts.json
+origdata
+migration_payload.proto
+data.json
