@@ -11,3 +11,4 @@ accounts.json
 origdata
 migration_payload.proto
 data.json
+config.json
