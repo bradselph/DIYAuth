@@ -4,6 +4,8 @@ import sys
 import json
 import base64
 import secrets
+import pyotp
+import qrcode
 import string
 import time
 from io import BytesIO
@@ -14,12 +16,8 @@ from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QPixmap, QImage
 from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
-import pyotp
-import qrcode
-from Crypto.Cipher import AES
-from Crypto.Hash import SHA256
+from Crypto.Protocol.KDF import PBKDF2
 
-# Try to import the protobuf generated code, but continue if it fails
 try:
     from google.protobuf.json_format import MessageToDict
     from migration_payload_pb2 import MigrationPayload, OtpParameters
@@ -71,18 +69,20 @@ class PassphraseSetupDialog(QDialog):
 
         QMessageBox.information(self, "Passphrase Help", help_text)
 
-
-class TOTPManager(QMainWindow):
+class DIYAuth(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TOTP Manager")
+        self.setWindowTitle("DIYAuth")
         self.setGeometry(100, 100, 400, 500)
 
         self.accounts: List[Dict[str, str]] = []
         self.debug_mode = False
         self.setup_logging()
 
-        if not os.path.exists(CONFIG_FILE):
+        self.salt = os.urandom(16)
+        self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.encrypted")
+
+        if not os.path.exists(self.config_file):
             self.initial_setup()
         else:
             self.load_config()
@@ -92,10 +92,10 @@ class TOTPManager(QMainWindow):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_totps)
-        self.timer.start(30000)  # Refresh every 30 seconds
+        self.timer.start(30000)
 
     def setup_logging(self) -> None:
-        self.logger = logging.getLogger('TOTPManager')
+        self.logger = logging.getLogger('DIYAuth')
         self.logger.setLevel(logging.DEBUG)
         file_handler = logging.FileHandler(DEBUG_LOG_FILE)
         file_handler.setLevel(logging.DEBUG)
@@ -156,20 +156,24 @@ class TOTPManager(QMainWindow):
         generate_url_action.triggered.connect(self.generate_otpauth_url)
         debug_menu.addAction(generate_url_action)
 
-    def load_config(self) -> None:
+    def load_config(self):
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-            self.passphrase = config.get("passphrase", "please-use-you-strong-passphrase")
+            with open(self.config_file, 'rb') as f:
+                encrypted_data = f.read()
+            decrypted_data = self.decrypt_data(encrypted_data)
+            config = json.loads(decrypted_data)
+            self.passphrase = config["passphrase"]
+            self.salt = base64.b64decode(config["salt"])
         except Exception as e:
             self.logger.error(f"Failed to load config: {str(e)}")
-            self.passphrase = "please-use-you-strong-passphrase"
+            self.passphrase = None
+            self.salt = os.urandom(16)
             self.save_config()
 
         self.logger.debug(f"Config loaded. Passphrase: {self.passphrase}")
 
     def initial_setup(self):
-        welcome_msg = ("Welcome to TOTP Manager!\n\n"
+        welcome_msg = ("Welcome to DIYAuth!\n\n"
                        "This application helps you manage your two-factor authentication (2FA) accounts securely. "
                        "To ensure the safety of your accounts, we use a passphrase to encrypt your data.\n\n"
                        "Let's set up your passphrase now.")
@@ -188,6 +192,7 @@ class TOTPManager(QMainWindow):
                 sys.exit(1)
             self.passphrase = custom_passphrase
 
+        self.salt = os.urandom(16)
         self.save_config()
 
         final_msg = ("Initial setup is complete. Your passphrase has been saved securely.\n\n"
@@ -225,27 +230,29 @@ class TOTPManager(QMainWindow):
 
         QMessageBox.information(parent_dialog, "Passphrase Help", help_text)
 
-    def save_config(self) -> None:
-        config = {"passphrase": self.passphrase}
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=2)
-        self.logger.debug(f"Config saved. Passphrase: {self.passphrase}")
+    def save_config(self):
+        config = {
+            "passphrase": self.passphrase,
+            "salt": base64.b64encode(self.salt).decode('utf-8')
+        }
+        encrypted_data = self.encrypt_data(json.dumps(config))
+        with open(self.config_file, 'wb') as f:
+            f.write(encrypted_data)
 
-    def encrypt_data(self, data: str) -> str:
+    def encrypt_data(self, data: str) -> bytes:
         key = self.derive_key(self.passphrase)
         cipher = AES.new(key, AES.MODE_GCM)
         ciphertext, tag = cipher.encrypt_and_digest(data.encode('utf-8'))
-        return base64.b64encode(cipher.nonce + tag + ciphertext).decode('utf-8')
+        return cipher.nonce + tag + ciphertext
 
-    def decrypt_data(self, encrypted_data: str) -> str:
+    def decrypt_data(self, encrypted_data: bytes) -> str:
         key = self.derive_key(self.passphrase)
-        raw = base64.b64decode(encrypted_data.encode('utf-8'))
-        nonce, tag, ciphertext = raw[:12], raw[12:28], raw[28:]
+        nonce, tag, ciphertext = encrypted_data[:12], encrypted_data[12:28], encrypted_data[28:]
         cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
         return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
 
     def derive_key(self, passphrase: str) -> bytes:
-        return SHA256.new(passphrase.encode('utf-8')).digest()[:32]
+        return PBKDF2(passphrase, self.salt, dkLen=32, count=100000, hmac_hash_module=SHA256)
 
     def get_embedded_data(self, name: str) -> str:
         try:
@@ -365,7 +372,6 @@ class TOTPManager(QMainWindow):
             self.logger.debug(f"Edited account name: {old_name} -> {new_name}")
             QMessageBox.information(self, "Success", f"Account name changed to {new_name}")
 
-
     def import_accounts(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(self, "Import Accounts", "", "JSON Files (*.json)")
         if file_name:
@@ -423,7 +429,6 @@ class TOTPManager(QMainWindow):
                 self.generate_otpauth_url(account)
             elif choice == "Edit Account Name":
                 self.edit_account_name(index)
-
 
     def show_context_menu(self, position):
             menu = QMenu()
@@ -486,7 +491,6 @@ class TOTPManager(QMainWindow):
         pyperclip.copy(text)
         QMessageBox.information(self, "Copied", "TOTP code copied to clipboard!")
 
-
     def add_account(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Account", "Enter account name:")
         if ok and name:
@@ -542,7 +546,6 @@ class TOTPManager(QMainWindow):
                 if self.debug_mode:
                     print(f"Migration failed: {str(e)}")
 
-
     def generate_otpauth_url(self, account: Dict[str, str] = None) -> None:
         if not self.accounts:
             QMessageBox.warning(self, "Error", "No accounts available. Please add an account first.")
@@ -573,9 +576,8 @@ class TOTPManager(QMainWindow):
         dialog.setIconPixmap(pixmap)
         dialog.exec_()
 
-
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = TOTPManager()
+    window = DIYAuth()
     window.show()
     sys.exit(app.exec_())
