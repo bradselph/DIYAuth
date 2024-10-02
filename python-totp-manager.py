@@ -79,7 +79,7 @@ class TOTPManager(QMainWindow):
         self.setGeometry(100, 100, 400, 500)
 
         self.accounts: List[Dict[str, str]] = []
-        self.debug_mode = True  # Set debug mode to True for troubleshooting
+        self.debug_mode = False
         self.setup_logging()
 
         if not os.path.exists(CONFIG_FILE):
@@ -103,7 +103,7 @@ class TOTPManager(QMainWindow):
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
 
-    def setup_ui(self) -> None:
+    def setup_ui(self):
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.layout = QVBoxLayout(self.central_widget)
@@ -111,59 +111,17 @@ class TOTPManager(QMainWindow):
         self.setup_menu_bar()
 
         self.account_list = QListWidget()
-        self.account_list.itemClicked.connect(self.show_account_options)
+        self.account_list.itemDoubleClicked.connect(self.show_totp_code)
+        self.account_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.account_list.customContextMenuRequested.connect(self.show_context_menu)
         self.layout.addWidget(self.account_list)
-
-        self.refresh_button = QPushButton("Refresh TOTPs")
-        self.refresh_button.clicked.connect(self.refresh_totps)
-        self.layout.addWidget(self.refresh_button)
-
-        button_layout = QHBoxLayout()
-        self.add_button = QPushButton("Add Account")
-        self.add_button.clicked.connect(self.add_account)
-        button_layout.addWidget(self.add_button)
-
-        self.remove_button = QPushButton("Remove Account")
-        self.remove_button.clicked.connect(self.remove_account)
-        button_layout.addWidget(self.remove_button)
-
-        self.layout.addLayout(button_layout)
-
-        advanced_layout = QHBoxLayout()
-        self.migrate_button = QPushButton("Migrate from Google Authenticator")
-        self.migrate_button.clicked.connect(self.migrate_from_google_auth)
-        if not PROTOBUF_AVAILABLE:
-            self.migrate_button.setEnabled(False)
-            self.migrate_button.setToolTip("Migration feature is disabled due to protobuf import issues")
-        advanced_layout.addWidget(self.migrate_button)
-
-        self.export_button = QPushButton("Export Accounts")
-        self.export_button.clicked.connect(self.export_accounts)
-        advanced_layout.addWidget(self.export_button)
-
-        self.import_button = QPushButton("Import Accounts")
-        self.import_button.clicked.connect(self.import_accounts)
-        advanced_layout.addWidget(self.import_button)
-
-        self.layout.addLayout(advanced_layout)
-
-        debug_layout = QHBoxLayout()
-        self.debug_button = QPushButton("Toggle Debug Mode")
-        self.debug_button.clicked.connect(self.toggle_debug_mode)
-        debug_layout.addWidget(self.debug_button)
-
-        self.generate_url_button = QPushButton("Generate OTPAuth URL")
-        self.generate_url_button.clicked.connect(self.generate_otpauth_url)
-        debug_layout.addWidget(self.generate_url_button)
-
-        self.layout.addLayout(debug_layout)
 
         self.debug_label = QLabel()
         self.debug_label.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.debug_label)
         self.debug_label.hide()
 
-    def setup_menu_bar(self) -> None:
+    def setup_menu_bar(self):
         menubar = self.menuBar()
 
         # Account menu
@@ -194,6 +152,9 @@ class TOTPManager(QMainWindow):
         debug_action = QAction('Toggle Debug Mode', self)
         debug_action.triggered.connect(self.toggle_debug_mode)
         debug_menu.addAction(debug_action)
+        generate_url_action = QAction('Generate OTPAuth URL', self)
+        generate_url_action.triggered.connect(self.generate_otpauth_url)
+        debug_menu.addAction(generate_url_action)
 
     def load_config(self) -> None:
         try:
@@ -464,10 +425,30 @@ class TOTPManager(QMainWindow):
                 self.edit_account_name(index)
 
 
-    def show_totp_code(self, account: Dict[str, str]) -> None:
-        totp = pyotp.TOTP(account['secret'])
-        code = totp.now()
+    def show_context_menu(self, position):
+            menu = QMenu()
+            view_totp_action = menu.addAction("View TOTP Code")
+            generate_qr_action = menu.addAction("Generate QR Code")
+            edit_name_action = menu.addAction("Edit Account Name")
 
+            action = menu.exec_(self.account_list.mapToGlobal(position))
+
+            if action:
+                item = self.account_list.itemAt(position)
+                if item:
+                    index = self.account_list.row(item)
+                    account = self.accounts[index]
+
+                    if action == view_totp_action:
+                        self.show_totp_code(item)
+                    elif action == generate_qr_action:
+                        self.generate_otpauth_url(account)
+                    elif action == edit_name_action:
+                        self.edit_account_name(index)
+
+    def show_totp_code(self, item):
+        index = self.account_list.row(item)
+        account = self.accounts[index]
         dialog = QDialog(self)
         dialog.setWindowTitle(f"TOTP for {account['name']}")
         dialog.setFixedSize(300, 200)
@@ -479,13 +460,20 @@ class TOTPManager(QMainWindow):
         time_left_label = QLabel()
         layout.addWidget(time_left_label)
 
+        copy_button = QPushButton("Copy to Clipboard")
+        copy_button.clicked.connect(lambda: self.copy_to_clipboard(code))
+        layout.addWidget(copy_button)
+
         dialog.setLayout(layout)
 
         def update_time_left():
             seconds_left = 30 - int(time.time()) % 30
             time_left_label.setText(f"Time left: {seconds_left} seconds")
             if seconds_left == 30:
-                code_label.setText(totp.now())
+                new_code = totp.now()
+                code_label.setText(new_code)
+                copy_button.clicked.disconnect()
+                copy_button.clicked.connect(lambda: self.copy_to_clipboard(new_code))
 
         update_timer = QTimer(dialog)
         update_timer.timeout.connect(update_time_left)
@@ -493,6 +481,11 @@ class TOTPManager(QMainWindow):
 
         update_time_left()
         dialog.exec_()
+
+    def copy_to_clipboard(self, text):
+        pyperclip.copy(text)
+        QMessageBox.information(self, "Copied", "TOTP code copied to clipboard!")
+
 
     def add_account(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Account", "Enter account name:")
