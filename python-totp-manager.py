@@ -4,11 +4,6 @@ import sys
 import json
 import base64
 import secrets
-import uuid
-import platform
-import hashlib
-import pyotp
-import qrcode
 import string
 import time
 from io import BytesIO
@@ -19,7 +14,10 @@ from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QPixmap, QImage
 from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
-from Crypto.Protocol.KDF import PBKDF2
+import pyotp
+import qrcode
+from Crypto.Cipher import AES
+from Crypto.Hash import SHA256
 
 
 try:
@@ -35,57 +33,17 @@ ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accoun
 DEBUG_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug.log")
 INTERNAL_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "internal_storage.dat")
 
-class PassphraseSetupDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Passphrase Setup")
-        self.layout = QVBoxLayout(self)
-
-        self.passphrase = self.generate_random_passphrase()
-
-        self.info_label = QLabel(f"We've generated a secure passphrase for you:\n\n{self.passphrase}\n\nDo you want to use this passphrase?")
-        self.layout.addWidget(self.info_label)
-
-        self.button_box = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
-        self.layout.addWidget(self.button_box)
-
-        self.help_button = QPushButton("What's this?")
-        self.button_box.addButton(self.help_button, QDialogButtonBox.HelpRole)
-
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        self.help_button.clicked.connect(self.show_passphrase_help)
-
-    def generate_random_passphrase(self, length=32):
-        alphabet = string.ascii_letters + string.digits + string.punctuation
-        return ''.join(secrets.choice(alphabet) for _ in range(length))
-
-    def show_passphrase_help(self):
-        help_text = ("Passphrase Information:\n\n"
-                     "The passphrase is used to encrypt your TOTP account data, ensuring that "
-                     "your sensitive information remains secure even if someone gains access to your device.\n\n"
-                     "Guidelines for a strong passphrase:\n"
-                     "- Use a mix of uppercase and lowercase letters, numbers, and symbols\n"
-                     "- Make it at least 12 characters long\n"
-                     "- Avoid using personal information or common words\n\n"
-                     "Remember to store your passphrase securely, as you'll need it to access "
-                     "your accounts if you reinstall the application or move to a new device.")
-
-        QMessageBox.information(self, "Passphrase Help", help_text)
-
-class DIYAuth(QMainWindow):
+class TOTPManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DIYAuth")
         self.setGeometry(100, 100, 400, 500)
 
-        self.accounts = []
+        self.accounts: List[Dict[str, str]] = []
         self.debug_mode = False
         self.setup_logging()
 
-        self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.encrypted")
-
-        if not os.path.exists(self.config_file):
+        if not os.path.exists(CONFIG_FILE):
             self.initial_setup()
         else:
             self.load_config()
@@ -106,7 +64,7 @@ class DIYAuth(QMainWindow):
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
 
-    def setup_ui(self):
+    def setup_ui(self) -> None:
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.layout = QVBoxLayout(self.central_widget)
@@ -117,14 +75,59 @@ class DIYAuth(QMainWindow):
         self.account_list.itemDoubleClicked.connect(self.show_totp_code)
         self.account_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.account_list.customContextMenuRequested.connect(self.show_context_menu)
+        self.account_list.itemClicked.connect(self.show_account_options)
         self.layout.addWidget(self.account_list)
+
+        self.refresh_button = QPushButton("Refresh TOTPs")
+        self.refresh_button.clicked.connect(self.refresh_totps)
+        self.layout.addWidget(self.refresh_button)
+
+        button_layout = QHBoxLayout()
+        self.add_button = QPushButton("Add Account")
+        self.add_button.clicked.connect(self.add_account)
+        button_layout.addWidget(self.add_button)
+
+        self.remove_button = QPushButton("Remove Account")
+        self.remove_button.clicked.connect(self.remove_account)
+        button_layout.addWidget(self.remove_button)
+
+        self.layout.addLayout(button_layout)
+
+        advanced_layout = QHBoxLayout()
+        self.migrate_button = QPushButton("Migrate from Google Authenticator")
+        self.migrate_button.clicked.connect(self.migrate_from_google_auth)
+        if not PROTOBUF_AVAILABLE:
+            self.migrate_button.setEnabled(False)
+            self.migrate_button.setToolTip("Migration feature is disabled due to protobuf import issues")
+        advanced_layout.addWidget(self.migrate_button)
+
+        self.export_button = QPushButton("Export Accounts")
+        self.export_button.clicked.connect(self.export_accounts)
+        advanced_layout.addWidget(self.export_button)
+
+        self.import_button = QPushButton("Import Accounts")
+        self.import_button.clicked.connect(self.import_accounts)
+        advanced_layout.addWidget(self.import_button)
+
+        self.layout.addLayout(advanced_layout)
+
+        debug_layout = QHBoxLayout()
+        self.debug_button = QPushButton("Toggle Debug Mode")
+        self.debug_button.clicked.connect(self.toggle_debug_mode)
+        debug_layout.addWidget(self.debug_button)
+
+        self.generate_url_button = QPushButton("Generate OTPAuth URL")
+        self.generate_url_button.clicked.connect(self.generate_otpauth_url)
+        debug_layout.addWidget(self.generate_url_button)
+
+        self.layout.addLayout(debug_layout)
 
         self.debug_label = QLabel()
         self.debug_label.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.debug_label)
         self.debug_label.hide()
 
-    def setup_menu_bar(self):
+    def setup_menu_bar(self) -> None:
         menubar = self.menuBar()
 
         # Account menu
@@ -150,39 +153,28 @@ class DIYAuth(QMainWindow):
         import_action.triggered.connect(self.import_accounts)
         tools_menu.addAction(import_action)
 
+        self.generate_otpauth_url = QAction('Generate OTPAuth URL', self)
+        self.generate_otpauth_url.clicked.connect(self.generate_otpauth_url)
+        tools_menu.addAction(self.generate_otpauth_url)
+
+
         # Debug menu
         debug_menu = menubar.addMenu('Debug')
         debug_action = QAction('Toggle Debug Mode', self)
         debug_action.triggered.connect(self.toggle_debug_mode)
         debug_menu.addAction(debug_action)
-        generate_url_action = QAction('Generate OTPAuth URL', self)
-        generate_url_action.triggered.connect(self.generate_otpauth_url)
-        debug_menu.addAction(generate_url_action)
 
-    def load_config(self):
+    def load_config(self) -> None:
         try:
-            with open(self.config_file, 'rb') as f:
-                encrypted_data = f.read()
-            self.salt = self.get_hardware_salt()
-            decrypted_data = self.decrypt_data(encrypted_data)
-            config = json.loads(decrypted_data)
-            self.passphrase = config["passphrase"]
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+            self.passphrase = config.get("passphrase", "please-use-you-strong-passphrase")
         except Exception as e:
             self.logger.error(f"Failed to load config: {str(e)}")
-            QMessageBox.warning(self, "Config Error", "Failed to load configuration. You may need to set up the application again.")
-            self.initial_setup()
+            self.passphrase = "please-use-you-strong-passphrase"
+            self.save_config()
 
-    def get_hardware_salt(self) -> bytes:
-        hardware_ids = [
-                str(uuid.getnode()),
-                os.name,
-                platform.system(),
-                platform.release(),
-                platform.machine(),
-                os.environ.get('USERNAME', ''),
-        ]
-        combined_id = ':'.join(hardware_ids)
-        return hashlib.sha256(combined_id.encode()).digest()[:16]
+        self.logger.debug(f"Config loaded. Passphrase: {self.passphrase}")
 
     def initial_setup(self):
         welcome_msg = ("Welcome to DIYAuth!\n\n"
@@ -192,19 +184,25 @@ class DIYAuth(QMainWindow):
 
         QMessageBox.information(self, "Welcome", welcome_msg, QMessageBox.Ok, QMessageBox.Ok)
 
-        dialog = PassphraseSetupDialog(self)
-        result = dialog.exec_()
+        passphrase = self.generate_random_passphrase()
 
-        if result == QDialog.Accepted:
-            self.passphrase = dialog.passphrase
-        else:
-            custom_passphrase, ok = self.get_custom_passphrase()
-            if not ok or not custom_passphrase:
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Passphrase Setup")
+        msg_box.setText(f"We've generated a secure passphrase for you:\n\n{passphrase}\n\nDo you want to use this passphrase?")
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+
+        help_button = msg_box.addButton("What's this?", QMessageBox.HelpRole)
+        help_button.clicked.connect(lambda: self.show_passphrase_help(msg_box))
+
+        choice = msg_box.exec_()
+
+        if choice == QMessageBox.No:
+            passphrase, ok = self.get_custom_passphrase()
+            if not ok or not passphrase:
                 QMessageBox.warning(self, "Setup Failed", "A passphrase is required. Setup aborted.")
                 sys.exit(1)
-            self.passphrase = custom_passphrase
 
-        self.salt = self.get_hardware_salt()
+        self.passphrase = passphrase
         self.save_config()
 
         final_msg = ("Initial setup is complete. Your passphrase has been saved securely.\n\n"
@@ -242,28 +240,31 @@ class DIYAuth(QMainWindow):
 
         QMessageBox.information(parent_dialog, "Passphrase Help", help_text)
 
-    def save_config(self):
-        config = {
-            "passphrase": self.passphrase
-        }
-        encrypted_data = self.encrypt_data(json.dumps(config))
-        with open(self.config_file, 'wb') as f:
-            f.write(encrypted_data)
+    def generate_random_passphrase(self, length=32):
+        alphabet = string.ascii_letters + string.digits + string.punctuation
+        return ''.join(secrets.choice(alphabet) for _ in range(length))
 
-    def encrypt_data(self, data: str) -> bytes:
+    def save_config(self) -> None:
+        config = {"passphrase": self.passphrase}
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+        self.logger.debug(f"Config saved. Passphrase: {self.passphrase}")
+
+    def encrypt_data(self, data: str) -> str:
         key = self.derive_key(self.passphrase)
         cipher = AES.new(key, AES.MODE_GCM)
         ciphertext, tag = cipher.encrypt_and_digest(data.encode('utf-8'))
-        return cipher.nonce + tag + ciphertext
+        return base64.b64encode(cipher.nonce + tag + ciphertext).decode('utf-8')
 
-    def decrypt_data(self, encrypted_data: bytes) -> str:
+    def decrypt_data(self, encrypted_data: str) -> str:
         key = self.derive_key(self.passphrase)
-        nonce, tag, ciphertext = encrypted_data[:12], encrypted_data[12:28], encrypted_data[28:]
+        raw = base64.b64decode(encrypted_data.encode('utf-8'))
+        nonce, tag, ciphertext = raw[:12], raw[12:28], raw[28:]
         cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
         return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
 
     def derive_key(self, passphrase: str) -> bytes:
-        return PBKDF2(passphrase, self.salt, dkLen=32, count=100000, hmac_hash_module=hashlib.sha256)
+        return SHA256.new(passphrase.encode('utf-8')).digest()[:32]
 
     def get_embedded_data(self, name: str) -> str:
         try:
@@ -383,6 +384,7 @@ class DIYAuth(QMainWindow):
             self.logger.debug(f"Edited account name: {old_name} -> {new_name}")
             QMessageBox.information(self, "Success", f"Account name changed to {new_name}")
 
+
     def import_accounts(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(self, "Import Accounts", "", "JSON Files (*.json)")
         if file_name:
@@ -441,30 +443,11 @@ class DIYAuth(QMainWindow):
             elif choice == "Edit Account Name":
                 self.edit_account_name(index)
 
-    def show_context_menu(self, position):
-            menu = QMenu()
-            view_totp_action = menu.addAction("View TOTP Code")
-            generate_qr_action = menu.addAction("Generate QR Code")
-            edit_name_action = menu.addAction("Edit Account Name")
 
-            action = menu.exec_(self.account_list.mapToGlobal(position))
+    def show_totp_code(self, account: Dict[str, str]) -> None:
+        totp = pyotp.TOTP(account['secret'])
+        code = totp.now()
 
-            if action:
-                item = self.account_list.itemAt(position)
-                if item:
-                    index = self.account_list.row(item)
-                    account = self.accounts[index]
-
-                    if action == view_totp_action:
-                        self.show_totp_code(item)
-                    elif action == generate_qr_action:
-                        self.generate_otpauth_url(account)
-                    elif action == edit_name_action:
-                        self.edit_account_name(index)
-
-    def show_totp_code(self, item):
-        index = self.account_list.row(item)
-        account = self.accounts[index]
         dialog = QDialog(self)
         dialog.setWindowTitle(f"TOTP for {account['name']}")
         dialog.setFixedSize(300, 200)
@@ -486,10 +469,7 @@ class DIYAuth(QMainWindow):
             seconds_left = 30 - int(time.time()) % 30
             time_left_label.setText(f"Time left: {seconds_left} seconds")
             if seconds_left == 30:
-                new_code = totp.now()
-                code_label.setText(new_code)
-                copy_button.clicked.disconnect()
-                copy_button.clicked.connect(lambda: self.copy_to_clipboard(new_code))
+                code_label.setText(totp.now())
 
         update_timer = QTimer(dialog)
         update_timer.timeout.connect(update_time_left)
@@ -556,6 +536,7 @@ class DIYAuth(QMainWindow):
                 QMessageBox.warning(self, "Migration Failed", f"Error during migration: {str(e)}")
                 if self.debug_mode:
                     print(f"Migration failed: {str(e)}")
+
 
     def generate_otpauth_url(self, account: Dict[str, str] = None) -> None:
         if not self.accounts:
