@@ -3,16 +3,21 @@ import os
 import sys
 import json
 import base64
+import secrets
+import string
 import time
 from io import BytesIO
 from typing import List, Dict, Any
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QLineEdit, QInputDialog, QMessageBox, QFileDialog, QLabel, QDialog
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QLineEdit,
+                             QInputDialog, QMessageBox, QFileDialog, QLabel, QDialog, QInputDialog, QMenuBar, QAction)
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QPixmap, QImage
 from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
 import pyotp
 import qrcode
+from Crypto.Cipher import AES
+from Crypto.Hash import SHA256
 
 # Try to import the protobuf generated code, but continue if it fails
 try:
@@ -37,12 +42,13 @@ class TOTPManager(QMainWindow):
         self.accounts: List[Dict[str, str]] = []
         self.debug_mode = True  # Set debug mode to True for troubleshooting
         self.setup_logging()
-        self.load_config()
 
-        self.dump_accounts_file()
+        if not os.path.exists(CONFIG_FILE):
+            self.initial_setup()
+        else:
+            self.load_config()
 
         self.setup_ui()
-
         self.load_accounts()
 
         self.timer = QTimer(self)
@@ -62,6 +68,8 @@ class TOTPManager(QMainWindow):
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.layout = QVBoxLayout(self.central_widget)
+
+        self.setup_menu_bar()
 
         self.account_list = QListWidget()
         self.account_list.itemClicked.connect(self.show_account_options)
@@ -116,14 +124,37 @@ class TOTPManager(QMainWindow):
         self.layout.addWidget(self.debug_label)
         self.debug_label.hide()
 
-    def setup_logging(self):
-        self.logger = logging.getLogger('TOTPManager')
-        self.logger.setLevel(logging.DEBUG)
-        file_handler = logging.FileHandler(DEBUG_LOG_FILE)
-        file_handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
+    def setup_menu_bar(self) -> None:
+        menubar = self.menuBar()
+
+        # Account menu
+        account_menu = menubar.addMenu('Account')
+        add_action = QAction('Add Account', self)
+        add_action.triggered.connect(self.add_account)
+        account_menu.addAction(add_action)
+        remove_action = QAction('Remove Account', self)
+        remove_action.triggered.connect(self.remove_account)
+        account_menu.addAction(remove_action)
+
+        # Tools menu
+        tools_menu = menubar.addMenu('Tools')
+        migrate_action = QAction('Migrate from Google Authenticator', self)
+        migrate_action.triggered.connect(self.migrate_from_google_auth)
+        tools_menu.addAction(migrate_action)
+        if not PROTOBUF_AVAILABLE:
+            migrate_action.setEnabled(False)
+        export_action = QAction('Export Accounts', self)
+        export_action.triggered.connect(self.export_accounts)
+        tools_menu.addAction(export_action)
+        import_action = QAction('Import Accounts', self)
+        import_action.triggered.connect(self.import_accounts)
+        tools_menu.addAction(import_action)
+
+        # Debug menu
+        debug_menu = menubar.addMenu('Debug')
+        debug_action = QAction('Toggle Debug Mode', self)
+        debug_action.triggered.connect(self.toggle_debug_mode)
+        debug_menu.addAction(debug_action)
 
     def load_config(self) -> None:
         try:
@@ -136,6 +167,76 @@ class TOTPManager(QMainWindow):
             self.save_config()
 
         self.logger.debug(f"Config loaded. Passphrase: {self.passphrase}")
+
+    def initial_setup(self):
+        welcome_msg = ("Welcome to TOTP Manager!\n\n"
+                       "This application helps you manage your two-factor authentication (2FA) accounts securely. "
+                       "To ensure the safety of your accounts, we use a passphrase to encrypt your data.\n\n"
+                       "Let's set up your passphrase now.")
+
+        QMessageBox.information(self, "Welcome", welcome_msg, QMessageBox.Ok, QMessageBox.Ok)
+
+        # Generate a random passphrase
+        passphrase = self.generate_random_passphrase()
+
+        # Ask user if they want to use the generated passphrase or enter their own
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Passphrase Setup")
+        msg_box.setText(f"We've generated a secure passphrase for you:\n\n{passphrase}\n\nDo you want to use this passphrase?")
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+
+        help_button = msg_box.addButton("What's this?", QMessageBox.HelpRole)
+        help_button.clicked.connect(lambda: self.show_passphrase_help(msg_box))
+
+        choice = msg_box.exec_()
+
+        if choice == QMessageBox.No:
+            passphrase, ok = self.get_custom_passphrase()
+            if not ok or not passphrase:
+                QMessageBox.warning(self, "Setup Failed", "A passphrase is required. Setup aborted.")
+                sys.exit(1)
+
+        self.passphrase = passphrase
+        self.save_config()
+
+        final_msg = ("Initial setup is complete. Your passphrase has been saved securely.\n\n"
+                     "IMPORTANT: Please remember or securely store your passphrase. "
+                     "You will need it to access your accounts if you reinstall the application "
+                     "or move to a new device.")
+        QMessageBox.information(self, "Setup Complete", final_msg)
+
+    def get_custom_passphrase(self):
+        dialog = QInputDialog(self)
+        dialog.setInputMode(QInputDialog.TextInput)
+        dialog.setWindowTitle("Passphrase Setup")
+        dialog.setLabelText("Enter your own passphrase:")
+        dialog.setTextEchoMode(QLineEdit.Password)
+
+        help_button = dialog.findChild(QPushButton, "")
+        if help_button:
+            help_button.clicked.disconnect()
+            help_button.clicked.connect(self.show_passphrase_help)
+
+        ok = dialog.exec_()
+        passphrase = dialog.textValue()
+        return passphrase, ok
+
+    def show_passphrase_help(self, parent_dialog):
+        help_text = ("Passphrase Information:\n\n"
+                     "The passphrase is used to encrypt your TOTP account data, ensuring that "
+                     "your sensitive information remains secure even if someone gains access to your device.\n\n"
+                     "Guidelines for a strong passphrase:\n"
+                     "- Use a mix of uppercase and lowercase letters, numbers, and symbols\n"
+                     "- Make it at least 12 characters long\n"
+                     "- Avoid using personal information or common words\n\n"
+                     "Remember to store your passphrase securely, as you'll need it to access "
+                     "your accounts if you reinstall the application or move to a new device.")
+
+        QMessageBox.information(parent_dialog, "Passphrase Help", help_text)
+
+    def generate_random_passphrase(self, length=32):
+        alphabet = string.ascii_letters + string.digits + string.punctuation
+        return ''.join(secrets.choice(alphabet) for _ in range(length))
 
     def save_config(self) -> None:
         config = {"passphrase": self.passphrase}
@@ -158,16 +259,6 @@ class TOTPManager(QMainWindow):
 
     def derive_key(self, passphrase: str) -> bytes:
         return SHA256.new(passphrase.encode('utf-8')).digest()[:32]
-
-    def dump_accounts_file(self) -> None:
-        try:
-            with open(ACCOUNTS_FILE, 'r') as f:
-                content = f.read()
-            self.logger.debug(f"Contents of accounts.json: {content}")
-            print(f"Contents of accounts.json: {content}")
-        except Exception as e:
-            self.logger.error(f"Error reading accounts.json: {str(e)}")
-            print(f"Error reading accounts.json: {str(e)}")
 
     def get_embedded_data(self, name: str) -> str:
         try:
@@ -206,27 +297,16 @@ class TOTPManager(QMainWindow):
         except Exception as e:
             self.logger.error(f"Error writing to internal storage: {str(e)}")
 
-    def load_accounts(self) -> None:
+    def load_accounts(self):
         try:
-            encrypted_data = self.get_embedded_data('accounts')
-            self.logger.debug(f"Encrypted data retrieved: {encrypted_data[:20]}...")
+            with open(ACCOUNTS_FILE, 'r') as f:
+                encrypted_data = f.read()
 
             if encrypted_data:
-                try:
-                    decrypted_data = self.decrypt_data(encrypted_data)
-                    self.logger.debug(f"Data decrypted successfully. First 20 chars: {decrypted_data[:20]}...")
-                except Exception as decrypt_error:
-                    self.logger.error(f"Decryption failed: {str(decrypt_error)}")
-                    QMessageBox.warning(self, "Decryption Error", "Failed to decrypt account data. Please check your passphrase.")
-                    return
+                decrypted_data = self.decrypt_data(encrypted_data)
+                loaded_accounts = json.loads(decrypted_data)
 
-                try:
-                    loaded_accounts = json.loads(decrypted_data)
-                    self.logger.debug(f"JSON parsed successfully. Number of accounts: {len(loaded_accounts)}")
-                except json.JSONDecodeError as json_error:
-                    self.logger.error(f"JSON parsing failed: {str(json_error)}")
-                    QMessageBox.warning(self, "Data Error", "Failed to parse account data. The file might be corrupted.")
-                    return
+                self.logger.debug(f"Loaded {len(loaded_accounts)} accounts from file.")
 
                 if self.verify_account_data(loaded_accounts):
                     self.accounts = loaded_accounts
@@ -239,6 +319,13 @@ class TOTPManager(QMainWindow):
                 self.logger.info("No existing accounts found.")
                 self.accounts = []
 
+        except FileNotFoundError:
+            self.logger.info("No existing accounts file found.")
+            self.accounts = []
+        except json.JSONDecodeError as json_error:
+            self.logger.error(f"JSON parsing failed: {str(json_error)}")
+            QMessageBox.warning(self, "Data Error", "Failed to parse account data. The file might be corrupted.")
+            return
         except Exception as e:
             self.logger.error(f"An error occurred while loading accounts: {str(e)}")
             QMessageBox.warning(self, "Load Error", f"An error occurred while loading accounts: {str(e)}")
@@ -268,10 +355,15 @@ class TOTPManager(QMainWindow):
 
         return True
 
-    def save_accounts(self) -> None:
-        encrypted_data = self.encrypt_data(json.dumps(self.accounts))
-        self.set_embedded_data('accounts', encrypted_data)
-        self.logger.debug(f"Saved {len(self.accounts)} accounts successfully.")
+    def save_accounts(self):
+        try:
+            encrypted_data = self.encrypt_data(json.dumps(self.accounts))
+            with open(ACCOUNTS_FILE, 'w') as f:
+                f.write(encrypted_data)
+            self.logger.debug(f"Saved {len(self.accounts)} accounts successfully.")
+        except Exception as e:
+            self.logger.error(f"Failed to save accounts: {str(e)}")
+            QMessageBox.warning(self, "Save Error", f"Failed to save accounts: {str(e)}")
 
     def edit_account_name(self, index: int) -> None:
         account = self.accounts[index]
@@ -286,19 +378,6 @@ class TOTPManager(QMainWindow):
             self.logger.debug(f"Edited account name: {old_name} -> {new_name}")
             QMessageBox.information(self, "Success", f"Account name changed to {new_name}")
 
-    def export_accounts(self) -> None:
-        file_name, _ = QFileDialog.getSaveFileName(self, "Export Accounts", "", "JSON Files (*.json)")
-        if file_name:
-            try:
-                with open(file_name, "w") as f:
-                    json.dump(self.accounts, f, indent=2)
-                QMessageBox.information(self, "Export Successful", f"Exported {len(self.accounts)} accounts to {file_name}")
-                if self.debug_mode:
-                    print(f"Exported {len(self.accounts)} accounts to {file_name}")
-            except Exception as e:
-                QMessageBox.warning(self, "Export Failed", f"Error during export: {str(e)}")
-                if self.debug_mode:
-                    print(f"Export failed: {str(e)}")
 
     def import_accounts(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(self, "Import Accounts", "", "JSON Files (*.json)")
@@ -328,20 +407,7 @@ class TOTPManager(QMainWindow):
             self.account_list.addItem(account['name'])
         self.logger.debug(f"TOTP refresh complete. Items in list: {self.account_list.count()}")
 
-    def edit_account_name(self, index):
-        account = self.accounts[index]
-        new_name, ok = QInputDialog.getText(self, "Edit Account Name",
-                                             "Enter new account name:",
-                                             text=account['name'])
-        if ok and new_name:
-            old_name = account['name']
-            account['name'] = new_name
-            self.save_accounts()
-            self.refresh_totps()
-            self.logger.debug(f"Edited account name: {old_name} -> {new_name}")
-            QMessageBox.information(self, "Success", f"Account name changed to {new_name}")
-
-    def export_accounts(self):
+    def export_accounts(self) -> None:
         file_name, _ = QFileDialog.getSaveFileName(self, "Export Accounts", "", "JSON Files (*.json)")
         if file_name:
             try:
@@ -355,60 +421,13 @@ class TOTPManager(QMainWindow):
                 if self.debug_mode:
                     print(f"Export failed: {str(e)}")
 
-    def import_accounts(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Import Accounts", "", "JSON Files (*.json)")
-        if file_name:
-            try:
-                with open(file_name, "r") as f:
-                    imported_accounts = json.load(f)
-                self.accounts.extend(imported_accounts)
-                self.save_accounts()
-                self.refresh_totps()
-                QMessageBox.information(self, "Import Successful", f"Imported {len(imported_accounts)} accounts.")
-                if self.debug_mode:
-                    print(f"Imported {len(imported_accounts)} accounts from {file_name}")
-            except Exception as e:
-                QMessageBox.warning(self, "Import Failed", f"Error during import: {str(e)}")
-                if self.debug_mode:
-                    print(f"Import failed: {str(e)}")
-
-    def refresh_totps(self):
-        self.logger.debug(f"Refreshing TOTPs. Number of accounts: {len(self.accounts)}")
-        self.account_list.clear()
-        for account in self.accounts:
-            self.logger.debug(f"Adding account to list: {account['name']}")
-            self.account_list.addItem(account['name'])
-        self.logger.debug(f"TOTP refresh complete. Items in list: {self.account_list.count()}")
-
-    def show_selected_account(self, item):
-        index = self.account_list.row(item)
-        account = self.accounts[index]
-        totp = pyotp.TOTP(account['secret'])
-        code = totp.now()
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"TOTP for {account['name']}")
-        dialog.setFixedSize(200, 200)
-
-        layout = QVBoxLayout()
-
-        code_label = QLabel(code)
-        code_label.setAlignment(Qt.AlignCenter)
-        code_label.setStyleSheet("font-size: 48px; font-weight: bold;")
-        layout.addWidget(code_label)
-
-        time_left_label = QLabel()
-        layout.addWidget(time_left_label)
-
-        dialog.setLayout(layout)
-
     def show_account_options(self, item) -> None:
         index = self.account_list.row(item)
         account = self.accounts[index]
         options = ["View TOTP Code", "Generate QR Code", "Edit Account Name"]
         choice, ok = QInputDialog.getItem(self, "Account Options",
-                                      f"Choose an action for {account['name']}:",
-                                      options, 0, False)
+                                          f"Choose an action for {account['name']}:",
+                                          options, 0, False)
 
         if ok:
             if choice == "View TOTP Code":
@@ -417,6 +436,7 @@ class TOTPManager(QMainWindow):
                 self.generate_otpauth_url(account)
             elif choice == "Edit Account Name":
                 self.edit_account_name(index)
+
 
     def show_totp_code(self, account: Dict[str, str]) -> None:
         totp = pyotp.TOTP(account['secret'])
@@ -477,34 +497,38 @@ class TOTPManager(QMainWindow):
             self.debug_label.hide()
             self.logger.debug("Debug mode disabled")
 
-def migrate_from_google_auth(self) -> None:
-    if not PROTOBUF_AVAILABLE:
-        QMessageBox.warning(self, "Feature Unavailable", "Migration feature is currently unavailable due to protobuf import issues.")
-        return
+    def migrate_from_google_auth(self) -> None:
+        if not PROTOBUF_AVAILABLE:
+            QMessageBox.warning(self, "Feature Unavailable", "Migration feature is currently unavailable due to protobuf import issues.")
+            return
 
-    migration_data, ok = QInputDialog.getText(self, "Migrate from Google Authenticator", "Enter migration data:")
-    if ok and migration_data:
-        try:
-            migration_data = migration_data.split("data=")[1]
-            decoded_data = base64.b64decode(migration_data)
-            payload = MigrationPayload()
-            payload.ParseFromString(decoded_data)
-            for otp_param in payload.otp_parameters:
-                secret = base64.b32encode(otp_param.raw_data).decode('utf-8').rstrip('=')
-                name = otp_param.name or f"Migrated Account {len(self.accounts) + 1}"
-                self.accounts.append({"name": name, "secret": secret})
-            self.save_accounts()
-            self.refresh_totps()
-            QMessageBox.information(self, "Migration Successful", f"Imported {len(payload.otp_parameters)} accounts.")
-            if self.debug_mode:
-                print(f"Migrated {len(payload.otp_parameters)} accounts from Google Authenticator.")
-        except Exception as e:
-            QMessageBox.warning(self, "Migration Failed", f"Error during migration: {str(e)}")
-            if self.debug_mode:
-                print(f"Migration failed: {str(e)}")
+        migration_data, ok = QInputDialog.getText(self, "Migrate from Google Authenticator", "Enter migration data:")
+        if ok and migration_data:
+            try:
+                migration_data = migration_data.split("data=")[1]
+                decoded_data = base64.b64decode(migration_data)
+                payload = MigrationPayload()
+                payload.ParseFromString(decoded_data)
+                for otp_param in payload.otp_parameters:
+                    secret = base64.b32encode(otp_param.raw_data).decode('utf-8').rstrip('=')
+                    name = otp_param.name or f"Migrated Account {len(self.accounts) + 1}"
+                    self.accounts.append({"name": name, "secret": secret})
+                self.save_accounts()
+                self.refresh_totps()
+                QMessageBox.information(self, "Migration Successful", f"Imported {len(payload.otp_parameters)} accounts.")
+                if self.debug_mode:
+                    print(f"Migrated {len(payload.otp_parameters)} accounts from Google Authenticator.")
+            except Exception as e:
+                QMessageBox.warning(self, "Migration Failed", f"Error during migration: {str(e)}")
+                if self.debug_mode:
+                    print(f"Migration failed: {str(e)}")
 
 
     def generate_otpauth_url(self, account: Dict[str, str] = None) -> None:
+        if not self.accounts:
+            QMessageBox.warning(self, "Error", "No accounts available. Please add an account first.")
+            return
+
         if account is None:
             current_item = self.account_list.currentItem()
             if current_item:
