@@ -38,11 +38,9 @@ class DIYAuth(QMainWindow):
         super().__init__()
         self.setWindowTitle("DIYAuth")
         self.setGeometry(100, 100, 400, 500)
-
         self.accounts: List[Dict[str, str]] = []
         self.debug_mode = False
         self.setup_logging()
-
         if not os.path.exists(CONFIG_FILE):
             self.initial_setup()
         else:
@@ -54,6 +52,8 @@ class DIYAuth(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_totps)
         self.timer.start(30000)
+        self.setup_ui()
+        self.load_accounts()
 
     def setup_logging(self) -> None:
         self.logger = logging.getLogger('DIYAuth')
@@ -72,52 +72,22 @@ class DIYAuth(QMainWindow):
         self.setup_menu_bar()
 
         self.account_list = QListWidget()
-        self.account_list.itemClicked.connect(self.show_account_options)
+        self.account_list.itemClicked.connect(self.select_account)
+        self.account_list.itemDoubleClicked.connect(self.show_totp_code)
+        self.account_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.account_list.customContextMenuRequested.connect(self.create_context_menu)
         self.layout.addWidget(self.account_list)
+
+        self.get_code_button = QPushButton("Get Code & Copy")
+        self.get_code_button.clicked.connect(self.get_code_and_copy)
+        self.layout.addWidget(self.get_code_button)
+
+        self.account_list.itemDoubleClicked.connect(self.show_account_options)
+        self.account_list.setContextMenuPolicy(Qt.CustomContextMenu)
 
         self.refresh_button = QPushButton("Refresh TOTPs")
         self.refresh_button.clicked.connect(self.refresh_totps)
         self.layout.addWidget(self.refresh_button)
-
-        button_layout = QHBoxLayout()
-        self.add_button = QPushButton("Add Account")
-        self.add_button.clicked.connect(self.add_account)
-        button_layout.addWidget(self.add_button)
-
-        self.remove_button = QPushButton("Remove Account")
-        self.remove_button.clicked.connect(self.remove_account)
-        button_layout.addWidget(self.remove_button)
-
-        self.layout.addLayout(button_layout)
-
-        advanced_layout = QHBoxLayout()
-        self.migrate_button = QPushButton("Migrate from Google Authenticator")
-        self.migrate_button.clicked.connect(self.migrate_from_google_auth)
-        if not PROTOBUF_AVAILABLE:
-            self.migrate_button.setEnabled(False)
-            self.migrate_button.setToolTip("Migration feature is disabled due to protobuf import issues")
-        advanced_layout.addWidget(self.migrate_button)
-
-        self.export_button = QPushButton("Export Accounts")
-        self.export_button.clicked.connect(self.export_accounts)
-        advanced_layout.addWidget(self.export_button)
-
-        self.import_button = QPushButton("Import Accounts")
-        self.import_button.clicked.connect(self.import_accounts)
-        advanced_layout.addWidget(self.import_button)
-
-        self.layout.addLayout(advanced_layout)
-
-        debug_layout = QHBoxLayout()
-        self.debug_button = QPushButton("Toggle Debug Mode")
-        self.debug_button.clicked.connect(self.toggle_debug_mode)
-        debug_layout.addWidget(self.debug_button)
-
-        self.generate_url_button = QPushButton("Generate OTPAuth URL")
-        self.generate_url_button.clicked.connect(self.generate_otpauth_url)
-        debug_layout.addWidget(self.generate_url_button)
-
-        self.layout.addLayout(debug_layout)
 
         self.debug_label = QLabel()
         self.debug_label.setAlignment(Qt.AlignCenter)
@@ -155,6 +125,109 @@ class DIYAuth(QMainWindow):
         debug_action = QAction('Toggle Debug Mode', self)
         debug_action.triggered.connect(self.toggle_debug_mode)
         debug_menu.addAction(debug_action)
+
+    def create_context_menu(self, position):
+        menu = QMenu()
+        item = self.account_list.itemAt(position)
+        if item:
+            view_action = menu.addAction("View TOTP Code")
+            copy_action = menu.addAction("Copy TOTP Code")
+            qr_action = menu.addAction("Generate QR Code")
+            edit_action = menu.addAction("Edit Account Name")
+            remove_action = menu.addAction("Remove Account")
+
+            action = menu.exec_(self.account_list.mapToGlobal(position))
+            if action == view_action:
+                self.show_totp_code(item)
+            elif action == copy_action:
+                self.copy_totp_code(item)
+            elif action == qr_action:
+                self.generate_otpauth_url(self.accounts[self.account_list.row(item)])
+            elif action == edit_action:
+                self.edit_account_name(self.account_list.row(item))
+            elif action == remove_action:
+                self.remove_account(self.account_list.row(item))
+
+    def select_account(self, item):
+        # This method is called when an account is clicked once
+        index = self.account_list.row(item)
+        account = self.accounts[index]
+        self.logger.debug(f"Selected account: {account['name']}")
+
+    def show_account_options(self, item):
+        # This method is now called on double-click
+        index = self.account_list.row(item)
+        account = self.accounts[index]
+        self.show_totp_code(account)
+
+    def copy_totp_code(self, item):
+        index = self.account_list.row(item)
+        account = self.accounts[index]
+        totp = pyotp.TOTP(account['secret'])
+        code = totp.now()
+        self.copy_to_clipboard(code)
+
+    def copy_to_clipboard(self, text):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        QMessageBox.information(self, "Copied", "TOTP code copied to clipboard!")
+
+    def toggle_auto_refresh(self, state):
+        if state == Qt.Checked:
+            self.timer.start(30000)
+        else:
+            self.timer.stop()
+
+    def get_code_and_copy(self):
+        current_item = self.account_list.currentItem()
+        if current_item:
+            index = self.account_list.row(current_item)
+            account = self.accounts[index]
+            totp = pyotp.TOTP(account['secret'])
+            code = totp.now()
+            self.copy_to_clipboard(code)
+            QMessageBox.information(self, "TOTP Code", f"TOTP code for {account['name']} has been copied to clipboard: {code}")
+        else:
+            QMessageBox.warning(self, "No Account Selected", "Please select an account first.")
+
+    def show_totp_code(self, item):
+        index = self.account_list.row(item)
+        account = self.accounts[index]
+        totp = pyotp.TOTP(account['secret'])
+        code = totp.now()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"TOTP for {account['name']}")
+        dialog.setFixedSize(300, 200)
+        layout = QVBoxLayout()
+        code_label = QLabel(code)
+        code_label.setAlignment(Qt.AlignCenter)
+        code_label.setStyleSheet("font-size: 48px; font-weight: bold;")
+        layout.addWidget(code_label)
+        time_left_label = QLabel()
+        layout.addWidget(time_left_label)
+
+        copy_button = QPushButton("Copy to Clipboard")
+        copy_button.clicked.connect(lambda: self.copy_to_clipboard(code))
+        layout.addWidget(copy_button)
+
+        dialog.setLayout(layout)
+
+        def update_time_left():
+            seconds_left = 30 - int(time.time()) % 30
+            time_left_label.setText(f"Time left: {seconds_left} seconds")
+            if seconds_left == 30:
+                new_code = totp.now()
+                code_label.setText(new_code)
+                copy_button.clicked.disconnect()
+                copy_button.clicked.connect(lambda: self.copy_to_clipboard(new_code))
+
+        update_timer = QTimer(dialog)
+        update_timer.timeout.connect(update_time_left)
+        update_timer.start(1000)
+
+        update_time_left()
+        dialog.exec_()
 
     def load_config(self) -> None:
         try:
@@ -376,7 +449,6 @@ class DIYAuth(QMainWindow):
             self.logger.debug(f"Edited account name: {old_name} -> {new_name}")
             QMessageBox.information(self, "Success", f"Account name changed to {new_name}")
 
-
     def import_accounts(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(self, "Import Accounts", "", "JSON Files (*.json)")
         if file_name:
@@ -436,7 +508,9 @@ class DIYAuth(QMainWindow):
                 self.edit_account_name(index)
 
 
-    def show_totp_code(self, account: Dict[str, str]) -> None:
+    def show_totp_code(self, item):
+        index = self.account_list.row(item)
+        account = self.accounts[index]
         totp = pyotp.TOTP(account['secret'])
         code = totp.now()
 
@@ -461,7 +535,10 @@ class DIYAuth(QMainWindow):
             seconds_left = 30 - int(time.time()) % 30
             time_left_label.setText(f"Time left: {seconds_left} seconds")
             if seconds_left == 30:
-                code_label.setText(totp.now())
+                new_code = totp.now()
+                code_label.setText(new_code)
+                copy_button.clicked.disconnect()
+                copy_button.clicked.connect(lambda: self.copy_to_clipboard(new_code))
 
         update_timer = QTimer(dialog)
         update_timer.timeout.connect(update_time_left)
@@ -471,8 +548,10 @@ class DIYAuth(QMainWindow):
         dialog.exec_()
 
     def copy_to_clipboard(self, text):
-        pyperclip.copy(text)
-        QMessageBox.information(self, "Copied", "TOTP code copied to clipboard!")
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        self.logger.debug(f"Copied to clipboard: {text}")
+
 
     def add_account(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Account", "Enter account name:")
@@ -484,14 +563,12 @@ class DIYAuth(QMainWindow):
                 self.refresh_totps()
                 self.logger.debug(f"Added new account: {name}")
 
-    def remove_account(self) -> None:
-        current_item = self.account_list.currentItem()
-        if current_item:
-            index = self.account_list.row(current_item)
-            removed_account = self.accounts.pop(index)
-            self.save_accounts()
-            self.refresh_totps()
-            self.logger.debug(f"Removed account: {removed_account['name']}")
+    def remove_account(self, index: int) -> None:
+        removed_account = self.accounts.pop(index)
+        self.save_accounts()
+        self.refresh_totps()
+        self.logger.debug(f"Removed account: {removed_account['name']}")
+        QMessageBox.information(self, "Account Removed", f"Account '{removed_account['name']}' has been removed.")
 
     def toggle_debug_mode(self) -> None:
         self.debug_mode = not self.debug_mode
@@ -528,7 +605,6 @@ class DIYAuth(QMainWindow):
                 QMessageBox.warning(self, "Migration Failed", f"Error during migration: {str(e)}")
                 if self.debug_mode:
                     print(f"Migration failed: {str(e)}")
-
 
     def generate_otpauth_url(self, account: Dict[str, str] = None) -> None:
         if not self.accounts:
