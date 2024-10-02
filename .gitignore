@@ -17,3 +17,5 @@ __pycache__/migration_payload_pb2.cpython-312.pyc
 internal_storage.dat
 config.json
 debug.log
+old.json
+config.json
