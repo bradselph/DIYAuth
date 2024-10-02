@@ -33,7 +33,7 @@ ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accoun
 DEBUG_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug.log")
 INTERNAL_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "internal_storage.dat")
 
-class TOTPManager(QMainWindow):
+class DIYAuth(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DIYAuth")
@@ -72,9 +72,6 @@ class TOTPManager(QMainWindow):
         self.setup_menu_bar()
 
         self.account_list = QListWidget()
-        self.account_list.itemDoubleClicked.connect(self.show_totp_code)
-        self.account_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.account_list.customContextMenuRequested.connect(self.show_context_menu)
         self.account_list.itemClicked.connect(self.show_account_options)
         self.layout.addWidget(self.account_list)
 
@@ -152,11 +149,6 @@ class TOTPManager(QMainWindow):
         import_action = QAction('Import Accounts', self)
         import_action.triggered.connect(self.import_accounts)
         tools_menu.addAction(import_action)
-
-        self.generate_otpauth_url = QAction('Generate OTPAuth URL', self)
-        self.generate_otpauth_url.clicked.connect(self.generate_otpauth_url)
-        tools_menu.addAction(self.generate_otpauth_url)
-
 
         # Debug menu
         debug_menu = menubar.addMenu('Debug')
