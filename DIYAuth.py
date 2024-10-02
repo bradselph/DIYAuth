@@ -4,6 +4,8 @@ import sys
 import json
 import base64
 import secrets
+import uuid
+import hashlib
 import pyotp
 import qrcode
 import string
@@ -75,11 +77,10 @@ class DIYAuth(QMainWindow):
         self.setWindowTitle("DIYAuth")
         self.setGeometry(100, 100, 400, 500)
 
-        self.accounts: List[Dict[str, str]] = []
+        self.accounts = []
         self.debug_mode = False
         self.setup_logging()
 
-        self.salt = os.urandom(16)
         self.config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.encrypted")
 
         if not os.path.exists(self.config_file):
@@ -160,17 +161,26 @@ class DIYAuth(QMainWindow):
         try:
             with open(self.config_file, 'rb') as f:
                 encrypted_data = f.read()
+            self.salt = self.get_hardware_salt()
             decrypted_data = self.decrypt_data(encrypted_data)
             config = json.loads(decrypted_data)
             self.passphrase = config["passphrase"]
-            self.salt = base64.b64decode(config["salt"])
         except Exception as e:
             self.logger.error(f"Failed to load config: {str(e)}")
-            self.passphrase = None
-            self.salt = os.urandom(16)
-            self.save_config()
+            QMessageBox.warning(self, "Config Error", "Failed to load configuration. You may need to set up the application again.")
+            self.initial_setup()
 
-        self.logger.debug(f"Config loaded. Passphrase: {self.passphrase}")
+    def get_hardware_salt(self) -> bytes:
+        hardware_ids = [
+                str(uuid.getnode()),
+                os.name,
+                platform.system(),
+                platform.release(),
+                platform.machine(),
+                os.environ.get('USERNAME', ''),
+        ]
+        combined_id = ':'.join(hardware_ids)
+        return hashlib.sha256(combined_id.encode()).digest()[:16]
 
     def initial_setup(self):
         welcome_msg = ("Welcome to DIYAuth!\n\n"
@@ -192,7 +202,7 @@ class DIYAuth(QMainWindow):
                 sys.exit(1)
             self.passphrase = custom_passphrase
 
-        self.salt = os.urandom(16)
+        self.salt = self.get_hardware_salt()
         self.save_config()
 
         final_msg = ("Initial setup is complete. Your passphrase has been saved securely.\n\n"
@@ -232,8 +242,7 @@ class DIYAuth(QMainWindow):
 
     def save_config(self):
         config = {
-            "passphrase": self.passphrase,
-            "salt": base64.b64encode(self.salt).decode('utf-8')
+            "passphrase": self.passphrase
         }
         encrypted_data = self.encrypt_data(json.dumps(config))
         with open(self.config_file, 'wb') as f:
@@ -252,7 +261,7 @@ class DIYAuth(QMainWindow):
         return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
 
     def derive_key(self, passphrase: str) -> bytes:
-        return PBKDF2(passphrase, self.salt, dkLen=32, count=100000, hmac_hash_module=SHA256)
+        return PBKDF2(passphrase, self.salt, dkLen=32, count=100000, hmac_hash_module=hashlib.sha256)
 
     def get_embedded_data(self, name: str) -> str:
         try:
