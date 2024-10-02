@@ -5,6 +5,7 @@ import json
 import base64
 import secrets
 import uuid
+import platform
 import hashlib
 import pyotp
 import qrcode
@@ -13,12 +14,13 @@ import time
 from io import BytesIO
 from typing import List, Dict, Any
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QLineEdit,
-                             QInputDialog, QMessageBox, QFileDialog, QLabel, QDialog, QInputDialog, QMenuBar, QAction, QDialogButtonBox)
+                             QInputDialog, QMessageBox, QFileDialog, QLabel, QDialog, QInputDialog, QMenuBar, QAction, QDialogButtonBox, QMenu)
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QPixmap, QImage
 from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import PBKDF2
+
 
 try:
     from google.protobuf.json_format import MessageToDict
