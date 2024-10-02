@@ -1,12 +1,23 @@
 syntax = "proto3";
-package main;
 
-option go_package = "./";
+package main;
 
 message MigrationPayload {
   repeated OtpParameters otp_parameters = 1;
 }
 
 message OtpParameters {
-  bytes raw_data = 1;  // Changed to raw bytes to avoid UTF-8 issues
+  bytes raw_data = 1;
+  string name = 2;
+  string issuer = 3;
+  string algorithm = 4;
+  int32 digits = 5;
+  int64 period = 6;
+  OtpType type = 7;
+}
+
+enum OtpType {
+  OTP_TYPE_UNSPECIFIED = 0;
+  OTP_TYPE_HOTP = 1;
+  OTP_TYPE_TOTP = 2;
 }
