@@ -16,11 +16,12 @@ DIYAuth is a robust desktop application for managing Time-Based One-Time Passwor
 - **Export Functionality**: Export your accounts for backup or transfer to another device.
 - **Import Functionality**: Import previously exported accounts, facilitating easy recovery or device transitions.
 
-### Security
+
+### Enhanced Security
 - **Local Storage**: All data is stored locally, reducing the risk of online breaches.
 - **Strong Encryption**: Uses AES-GCM for encrypting sensitive data.
 - **Key Derivation**: Implements PBKDF2 with SHA256 for secure key derivation.
-- **Salted Hashing**: Unique salt for each installation to prevent rainbow table attacks.
+- **Hardware-based Salt**: Utilizes a combination of hardware identifiers to create a unique, persistent salt for each installation.
 - **Encrypted Configuration**: Config file is encrypted to protect user settings.
 
 ### User Interface
@@ -53,6 +54,7 @@ DIYAuth is a robust desktop application for managing Time-Based One-Time Passwor
 1. Run the application:
    - If using the precompiled binary, double-click `DIYAuth.exe`.
    - If running from source, use `python DIYAuth.py`.
+
 2. On first run, you'll be prompted to set a strong passphrase. This passphrase encrypts your TOTP secrets, so make sure it's secure and memorable.
 3. Use the "Add Account" button to add new accounts. You'll need to provide:
    - Account Name: A memorable name for the account
@@ -71,6 +73,18 @@ DIYAuth is a robust desktop application for managing Time-Based One-Time Passwor
 - **Salted Hashing**: A unique salt is generated for each installation, adding an extra layer of security.
 - **Encrypted Config**: The configuration file is also encrypted, protecting user settings.
 
+
+## Security Details
+
+DIYAuth implements several security measures to protect your TOTP secrets:
+
+1. **Hardware-based Salt**: Instead of storing a salt file, DIYAuth generates a unique salt based on your hardware identifiers. This ensures that:
+   - The salt is persistent for your machine, allowing consistent decryption.
+   - Each installation has a unique salt, protecting against rainbow table attacks.
+   - If the application is moved to a new machine, it automatically uses a different salt.
+2. **Encrypted Configuration**: The configuration file, including your passphrase, is encrypted using AES-GCM. The encryption key is derived from your passphrase and the hardware-based salt using PBKDF2.
+3. **No Plain Text Storage**: At no point are your TOTP secrets or passphrase stored in plain text on your system.
+
 ## Advanced Usage
 - **Changing Passphrase**: To change your passphrase, use the "Change Passphrase" option in the settings menu.
 - **Debug Mode**: Enable debug mode for detailed logging (not recommended for regular use).
@@ -78,6 +92,8 @@ DIYAuth is a robust desktop application for managing Time-Based One-Time Passwor
 ## Troubleshooting
 - **Lost Passphrase**: If you lose your passphrase, you'll need to reset the configuration. Delete the `config.encrypted` file in the application directory. Note that this will make your existing stored accounts inaccessible.
 - **Import Issues**: If you're having trouble importing from Google Authenticator, ensure you're copying the entire migration string, including the "otpauth-migration://offline?data=" part.
+- **Moving to a New Machine**: If you move your DIYAuth installation to a new machine, you'll need to re-enter your passphrase. The new machine will generate a different hardware-based salt, so your old encrypted files won't be directly readable. Always keep a secure backup of your TOTP secrets.
+
 
 ## Contributing
 
