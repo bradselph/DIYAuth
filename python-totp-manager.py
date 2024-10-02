@@ -9,7 +9,7 @@ import time
 from io import BytesIO
 from typing import List, Dict, Any
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QLineEdit,
-                             QInputDialog, QMessageBox, QFileDialog, QLabel, QDialog, QInputDialog, QMenuBar, QAction)
+                             QInputDialog, QMessageBox, QFileDialog, QLabel, QDialog, QInputDialog, QMenuBar, QAction, QDialogButtonBox)
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QPixmap, QImage
 from Crypto.Cipher import AES
@@ -32,6 +32,45 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.j
 ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts.json")
 DEBUG_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug.log")
 INTERNAL_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "internal_storage.dat")
+
+class PassphraseSetupDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Passphrase Setup")
+        self.layout = QVBoxLayout(self)
+
+        self.passphrase = self.generate_random_passphrase()
+
+        self.info_label = QLabel(f"We've generated a secure passphrase for you:\n\n{self.passphrase}\n\nDo you want to use this passphrase?")
+        self.layout.addWidget(self.info_label)
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
+        self.layout.addWidget(self.button_box)
+
+        self.help_button = QPushButton("What's this?")
+        self.button_box.addButton(self.help_button, QDialogButtonBox.HelpRole)
+
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        self.help_button.clicked.connect(self.show_passphrase_help)
+
+    def generate_random_passphrase(self, length=32):
+        alphabet = string.ascii_letters + string.digits + string.punctuation
+        return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+    def show_passphrase_help(self):
+        help_text = ("Passphrase Information:\n\n"
+                     "The passphrase is used to encrypt your TOTP account data, ensuring that "
+                     "your sensitive information remains secure even if someone gains access to your device.\n\n"
+                     "Guidelines for a strong passphrase:\n"
+                     "- Use a mix of uppercase and lowercase letters, numbers, and symbols\n"
+                     "- Make it at least 12 characters long\n"
+                     "- Avoid using personal information or common words\n\n"
+                     "Remember to store your passphrase securely, as you'll need it to access "
+                     "your accounts if you reinstall the application or move to a new device.")
+
+        QMessageBox.information(self, "Passphrase Help", help_text)
+
 
 class TOTPManager(QMainWindow):
     def __init__(self):
@@ -176,27 +215,18 @@ class TOTPManager(QMainWindow):
 
         QMessageBox.information(self, "Welcome", welcome_msg, QMessageBox.Ok, QMessageBox.Ok)
 
-        # Generate a random passphrase
-        passphrase = self.generate_random_passphrase()
+        dialog = PassphraseSetupDialog(self)
+        result = dialog.exec_()
 
-        # Ask user if they want to use the generated passphrase or enter their own
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Passphrase Setup")
-        msg_box.setText(f"We've generated a secure passphrase for you:\n\n{passphrase}\n\nDo you want to use this passphrase?")
-        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-
-        help_button = msg_box.addButton("What's this?", QMessageBox.HelpRole)
-        help_button.clicked.connect(lambda: self.show_passphrase_help(msg_box))
-
-        choice = msg_box.exec_()
-
-        if choice == QMessageBox.No:
-            passphrase, ok = self.get_custom_passphrase()
-            if not ok or not passphrase:
+        if result == QDialog.Accepted:
+            self.passphrase = dialog.passphrase
+        else:
+            custom_passphrase, ok = self.get_custom_passphrase()
+            if not ok or not custom_passphrase:
                 QMessageBox.warning(self, "Setup Failed", "A passphrase is required. Setup aborted.")
                 sys.exit(1)
+            self.passphrase = custom_passphrase
 
-        self.passphrase = passphrase
         self.save_config()
 
         final_msg = ("Initial setup is complete. Your passphrase has been saved securely.\n\n"
@@ -233,10 +263,6 @@ class TOTPManager(QMainWindow):
                      "your accounts if you reinstall the application or move to a new device.")
 
         QMessageBox.information(parent_dialog, "Passphrase Help", help_text)
-
-    def generate_random_passphrase(self, length=32):
-        alphabet = string.ascii_letters + string.digits + string.punctuation
-        return ''.join(secrets.choice(alphabet) for _ in range(length))
 
     def save_config(self) -> None:
         config = {"passphrase": self.passphrase}
@@ -553,6 +579,7 @@ class TOTPManager(QMainWindow):
         dialog.setText(url)
         dialog.setIconPixmap(pixmap)
         dialog.exec_()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
